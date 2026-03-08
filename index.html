@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ESP32 Dashboard</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;600;800&display=swap" rel="stylesheet"/>
+
+  <!--
+    MQTT.js: librería que permite conectarse a un broker MQTT
+    directamente desde el navegador usando WebSockets (wss://).
+    Reemplaza completamente a Socket.IO — ya no necesitamos Flask.
+  -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0a0c10;
+      --surface:  #111318;
+      --border:   #1e2330;
+      --accent:   #00e5ff;
+      --accent2:  #ff4081;
+      --text:     #cdd6f4;
+      --muted:    #4a5068;
+      --mono:     'Share Tech Mono', monospace;
+      --sans:     'Exo 2', sans-serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      min-height: 100vh;
+      padding: 2rem;
+      background-image:
+        radial-gradient(ellipse 80% 40% at 50% -10%, rgba(0,229,255,0.07) 0%, transparent 70%),
+        repeating-linear-gradient(0deg, transparent, transparent 39px, var(--border) 39px, var(--border) 40px),
+        repeating-linear-gradient(90deg, transparent, transparent 39px, var(--border) 39px, var(--border) 40px);
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 2.5rem;
+    }
+    .logo-dot {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 12px var(--accent);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%,100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.4; transform: scale(0.7); }
+    }
+    header h1 { font-size: 1.4rem; font-weight: 800; letter-spacing: 0.15em; text-transform: uppercase; color: #fff; }
+    header h1 span { color: var(--accent); }
+    .status-badge {
+      margin-left: auto;
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      padding: 0.3rem 0.8rem;
+      border-radius: 2px;
+      background: rgba(0,229,255,0.08);
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      letter-spacing: 0.1em;
+    }
+    .status-badge.offline { border-color: var(--accent2); color: var(--accent2); background: rgba(255,64,129,0.08); }
+
+    .grid { display: grid; grid-template-columns: 1fr 340px; gap: 1.5rem; }
+    .sensors-col { display: flex; flex-direction: column; gap: 1.5rem; }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1.5rem;
+      position: relative;
+      overflow: hidden;
+    }
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--card-accent, var(--accent)), transparent);
+    }
+    .card.humidity { --card-accent: var(--accent2); }
+
+    .card-title {
+      font-size: 0.7rem;
+      font-family: var(--mono);
+      letter-spacing: 0.2em;
+      color: var(--muted);
+      text-transform: uppercase;
+      margin-bottom: 1.2rem;
+    }
+
+    .sensor-row { display: flex; align-items: baseline; gap: 0.5rem; margin-bottom: 1.2rem; }
+    .sensor-value { font-family: var(--mono); font-size: 3.5rem; line-height: 1; transition: color 0.3s; }
+    .sensor-value.temp { color: var(--accent); text-shadow: 0 0 20px rgba(0,229,255,0.4); }
+    .sensor-value.hum  { color: var(--accent2); text-shadow: 0 0 20px rgba(255,64,129,0.4); }
+    .sensor-unit { font-size: 1.5rem; color: var(--muted); }
+
+    .chart-wrap { position: relative; height: 160px; }
+    .right-col { display: flex; flex-direction: column; gap: 1.5rem; }
+
+    .rgb-preview {
+      height: 80px; border-radius: 3px; border: 1px solid var(--border);
+      transition: background 0.3s; margin-bottom: 1rem;
+      position: relative; overflow: hidden;
+    }
+    .rgb-preview::after {
+      content: attr(data-label);
+      position: absolute; bottom: 6px; right: 10px;
+      font-family: var(--mono); font-size: 0.7rem; color: rgba(255,255,255,0.5);
+    }
+
+    .picker-wrap { display: flex; flex-direction: column; gap: 0.8rem; }
+    .color-input-row { display: flex; align-items: center; gap: 0.8rem; }
+    .color-input-row label { font-family: var(--mono); font-size: 0.75rem; width: 14px; color: var(--muted); }
+    .color-input-row input[type=range] { flex: 1; -webkit-appearance: none; height: 4px; border-radius: 2px; outline: none; cursor: pointer; }
+    #rangeR { background: linear-gradient(90deg, #111, #ff4444); }
+    #rangeG { background: linear-gradient(90deg, #111, #44ff44); }
+    #rangeB { background: linear-gradient(90deg, #111, #4488ff); }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+      background: #fff; border: 2px solid var(--border); box-shadow: 0 0 6px rgba(0,0,0,0.5);
+    }
+    .color-input-row .val { font-family: var(--mono); font-size: 0.75rem; width: 28px; text-align: right; color: var(--text); }
+    .palette-row { display: flex; align-items: center; gap: 0.8rem; margin-top: 0.4rem; }
+    .palette-row label { font-family: var(--mono); font-size: 0.7rem; color: var(--muted); letter-spacing: 0.1em; }
+    input[type=color] { width: 36px; height: 36px; border: 1px solid var(--border); border-radius: 3px; background: none; cursor: pointer; padding: 2px; }
+
+    .btn-send {
+      width: 100%; padding: 0.75rem; background: transparent;
+      border: 1px solid var(--accent); color: var(--accent);
+      font-family: var(--mono); font-size: 0.85rem; letter-spacing: 0.15em;
+      text-transform: uppercase; cursor: pointer; border-radius: 3px;
+      transition: background 0.2s, box-shadow 0.2s; margin-top: 0.5rem;
+    }
+    .btn-send:hover { background: rgba(0,229,255,0.1); box-shadow: 0 0 16px rgba(0,229,255,0.2); }
+    .btn-send:active { transform: scale(0.98); }
+
+    .log { font-family: var(--mono); font-size: 0.72rem; color: var(--muted); max-height: 90px; overflow-y: auto; line-height: 1.7; }
+    .log span { color: var(--accent); }
+    .log .err  { color: var(--accent2); }
+
+    @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo-dot"></div>
+  <h1>ESP32 <span>Dashboard</span></h1>
+  <div class="status-badge offline" id="badge">DESCONECTADO</div>
+</header>
+
+<div class="grid">
+
+  <div class="sensors-col">
+    <div class="card">
+      <div class="card-title">// temperatura en tiempo real</div>
+      <div class="sensor-row">
+        <div class="sensor-value temp" id="tempVal">--.-</div>
+        <div class="sensor-unit">°C</div>
+      </div>
+      <div class="chart-wrap"><canvas id="tempChart"></canvas></div>
+    </div>
+
+    <div class="card humidity">
+      <div class="card-title">// humedad en tiempo real</div>
+      <div class="sensor-row">
+        <div class="sensor-value hum" id="humVal">---</div>
+        <div class="sensor-unit">%</div>
+      </div>
+      <div class="chart-wrap"><canvas id="humChart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="right-col">
+    <div class="card">
+      <div class="card-title">// control rgb — esp32</div>
+      <div class="rgb-preview" id="rgbPreview" data-label="rgb(0, 0, 0)"></div>
+      <div class="picker-wrap">
+        <div class="color-input-row">
+          <label>R</label><input type="range" id="rangeR" min="0" max="255" value="0"/><span class="val" id="valR">0</span>
+        </div>
+        <div class="color-input-row">
+          <label>G</label><input type="range" id="rangeG" min="0" max="255" value="0"/><span class="val" id="valG">0</span>
+        </div>
+        <div class="color-input-row">
+          <label>B</label><input type="range" id="rangeB" min="0" max="255" value="0"/><span class="val" id="valB">0</span>
+        </div>
+        <div class="palette-row">
+          <label>PALETA</label>
+          <input type="color" id="colorPalette" value="#000000"/>
+        </div>
+        <button class="btn-send" id="btnSend">▶ enviar a esp32</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">// log de eventos</div>
+      <div class="log" id="log"><div>conectando al broker...</div></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // ════════════════════════════════════════════════════════
+  // CONFIGURACIÓN MQTT
+  // ¡Cambia estos valores por los de tu cluster HiveMQ Cloud!
+  // ════════════════════════════════════════════════════════
+  const MQTT_HOST     = "2d0b0cd35d964d3aa401633a4581780c.s1.eu.hivemq.cloud";
+  const MQTT_PORT     = 8884;          // Puerto WebSocket con TLS
+  const MQTT_USER     = "juandavid";
+  const MQTT_PASS     = "FXHf0612";
+  const MQTT_CLIENT_ID = "browser_dashboard_" + Math.random().toString(16).slice(2, 8);
+  // El sufijo aleatorio evita colisión de client_id si abres
+  // el dashboard en varias pestañas al mismo tiempo.
+
+  const TOPIC_SENSOR = "esp32/sensor/data";  // recibir
+  const TOPIC_RGB    = "esp32/rgb/data";     // enviar
+
+  // ════════════════════════════════════════════════════════
+  // CONEXIÓN MQTT.js
+  //
+  // El navegador NO puede abrir sockets TCP directamente,
+  // pero sí WebSockets (wss://).
+  // HiveMQ Cloud expone el puerto 8884 para MQTT sobre WSS,
+  // que es exactamente lo que MQTT.js usa aquí.
+  // ════════════════════════════════════════════════════════
+  const badge = document.getElementById('badge');
+
+  const client = mqtt.connect(`wss://${MQTT_HOST}:${MQTT_PORT}/mqtt`, {
+    username:  MQTT_USER,
+    password:  MQTT_PASS,
+    clientId:  MQTT_CLIENT_ID,
+    clean:     true,       // sesión limpia en cada conexión
+    reconnectPeriod: 3000, // reintenta cada 3s si se desconecta
+    connectTimeout: 10000  // timeout de conexión: 10s
+  });
+
+  // ── Conexión establecida con el broker ──────────────────
+  client.on('connect', () => {
+    badge.textContent = 'CONECTADO';
+    badge.classList.remove('offline');
+    addLog('conectado a HiveMQ Cloud');
+
+    // Suscribirse al topic de sensores
+    // El navegador ahora recibe los mensajes DIRECTAMENTE del broker,
+    // sin pasar por ningún servidor intermedio.
+    client.subscribe(TOPIC_SENSOR, { qos: 1 }, (err) => {
+      if (err) {
+        addLog(`error al suscribirse: ${err.message}`, true);
+      } else {
+        addLog(`suscrito a '${TOPIC_SENSOR}'`);
+      }
+    });
+  });
+
+  // ── Pérdida de conexión ─────────────────────────────────
+  client.on('offline', () => {
+    badge.textContent = 'DESCONECTADO';
+    badge.classList.add('offline');
+    addLog('conexión perdida, reintentando...', true);
+  });
+
+  // ── Error de conexión ───────────────────────────────────
+  client.on('error', (err) => {
+    addLog(`error MQTT: ${err.message}`, true);
+    // MQTT.js cierra el socket en error; reconnectPeriod lo reintenta
+    client.end();
+  });
+
+  // ── Mensaje recibido del ESP32 ──────────────────────────
+  // Equivalente al on_message() de paho en el servidor Flask.
+  // Ahora corre directamente en el navegador.
+  client.on('message', (topic, message) => {
+    if (topic !== TOPIC_SENSOR) return;
+
+    try {
+      const data = JSON.parse(message.toString());
+      const t    = data.temperature;
+      const h    = data.humidity;
+      const now  = new Date().toLocaleTimeString('es', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+      });
+
+      // Actualizar temperatura
+      document.getElementById('tempVal').textContent = t.toFixed(1);
+      tempChart.labels.push(now);
+      tempChart.data.push(t);
+      if (tempChart.labels.length > MAX_POINTS) { tempChart.labels.shift(); tempChart.data.shift(); }
+      tempChart.chart.update();
+
+      // Actualizar humedad
+      document.getElementById('humVal').textContent = h;
+      humChart.labels.push(now);
+      humChart.data.push(h);
+      if (humChart.labels.length > MAX_POINTS) { humChart.labels.shift(); humChart.data.shift(); }
+      humChart.chart.update();
+
+      addLog(`temp: ${t.toFixed(1)}°C  |  hum: ${h}%`);
+
+    } catch (e) {
+      addLog(`JSON inválido: ${e.message}`, true);
+    }
+  });
+
+  // ════════════════════════════════════════════════════════
+  // GRÁFICAS
+  // ════════════════════════════════════════════════════════
+  const MAX_POINTS = 40;
+
+  function buildChart(canvasId, color, yMin, yMax) {
+    const labels = [], data = [];
+    const ctx = document.getElementById(canvasId).getContext('2d');
+    const chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          data, borderColor: color, borderWidth: 2, pointRadius: 0, fill: true,
+          backgroundColor: (ctx) => {
+            const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 160);
+            g.addColorStop(0, color.replace(')', ',0.18)').replace('rgb', 'rgba'));
+            g.addColorStop(1, color.replace(')', ',0)').replace('rgb', 'rgba'));
+            return g;
+          },
+          tension: 0.4
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        animation: { duration: 300 },
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { display: false },
+          y: {
+            min: yMin, max: yMax,
+            grid: { color: '#1e2330' },
+            ticks: { color: '#4a5068', font: { family: 'Share Tech Mono', size: 11 } }
+          }
+        }
+      }
+    });
+    return { labels, data, chart };
+  }
+
+  const tempChart = buildChart('tempChart', 'rgb(0,229,255)',  10, 40);
+  const humChart  = buildChart('humChart',  'rgb(255,64,129)',  0, 100);
+
+  // ════════════════════════════════════════════════════════
+  // CONTROL RGB
+  // ════════════════════════════════════════════════════════
+  const rangeR  = document.getElementById('rangeR');
+  const rangeG  = document.getElementById('rangeG');
+  const rangeB  = document.getElementById('rangeB');
+  const preview = document.getElementById('rgbPreview');
+  const palette = document.getElementById('colorPalette');
+
+  function updatePreview() {
+    const r = rangeR.value, g = rangeG.value, b = rangeB.value;
+    document.getElementById('valR').textContent = r;
+    document.getElementById('valG').textContent = g;
+    document.getElementById('valB').textContent = b;
+    preview.style.background = `rgb(${r},${g},${b})`;
+    preview.dataset.label = `rgb(${r}, ${g}, ${b})`;
+  }
+
+  rangeR.addEventListener('input', updatePreview);
+  rangeG.addEventListener('input', updatePreview);
+  rangeB.addEventListener('input', updatePreview);
+
+  palette.addEventListener('input', () => {
+    const hex = palette.value;
+    rangeR.value = parseInt(hex.slice(1,3), 16);
+    rangeG.value = parseInt(hex.slice(3,5), 16);
+    rangeB.value = parseInt(hex.slice(5,7), 16);
+    updatePreview();
+  });
+
+  document.getElementById('btnSend').addEventListener('click', () => {
+    const r = parseInt(rangeR.value);
+    const g = parseInt(rangeG.value);
+    const b = parseInt(rangeB.value);
+
+    // Publicar directamente al broker → el ESP32 lo recibirá al instante
+    client.publish(TOPIC_RGB, `${r},${g},${b}`, { qos: 1 });
+    addLog(`rgb enviado → R:${r} G:${g} B:${b}`);
+  });
+
+  // ════════════════════════════════════════════════════════
+  // LOG
+  // ════════════════════════════════════════════════════════
+  function addLog(msg, isErr = false) {
+    const logEl = document.getElementById('log');
+    const now   = new Date().toLocaleTimeString('es');
+    const div   = document.createElement('div');
+    div.innerHTML = isErr
+      ? `<span class="err">[${now}]</span> ${msg}`
+      : `<span>[${now}]</span> ${msg}`;
+    logEl.appendChild(div);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+</script>
+</body>
+</html>
